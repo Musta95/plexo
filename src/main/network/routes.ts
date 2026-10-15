@@ -10,13 +10,14 @@ import { Agent as HttpsAgent, request as httpsRequest } from 'node:https'
 import { isIP, type Socket } from 'node:net'
 import type { Duplex } from 'node:stream'
 import type { IpFamily, NetworkInterfaceInfo } from '../../shared/types'
-import { connectRoute } from './deviceBinding'
+import { connectRouteAsync } from './deviceBinding'
 
 export interface NetworkRoute {
   device: string
   localAddress: string
   remoteAddress: string
   family: IpFamily
+  interfaceIndex?: number
 }
 
 export type RemoteAddress = { address: string; family: IpFamily }
@@ -51,7 +52,8 @@ export function routesFor(
         device: iface.device,
         localAddress: local.address,
         remoteAddress: remote.address,
-        family: remote.family
+        family: remote.family,
+        interfaceIndex: iface.interfaceIndex
       }))
   )
 }
@@ -165,6 +167,7 @@ async function connectOnInterface(
 
   return new Promise<Socket>((resolve, reject) => {
     const racing = new Set<{ tcp: Socket; socket: Socket }>()
+    let connecting = 0
     let next = 0
     let done = false
     let lastError: Error = new Error('Connection failed')
@@ -194,7 +197,13 @@ async function connectOnInterface(
       clearTimeout(stagger)
       if (done || next >= routes.length) return
       const route = routes[next++]
-      const tcp = connectRoute(route, port)
+      connecting++
+      void connectRouteAsync(route, port).then((tcp) => {
+      connecting--
+      if (done) {
+        tcp.destroy()
+        return
+      }
       const socket = secure ? secure(tcp) : tcp
       const entry = { tcp, socket }
       racing.add(entry)
@@ -219,12 +228,21 @@ async function connectOnInterface(
         if (lastGoodRoute.get(memory) === routeKey(route)) lastGoodRoute.delete(memory)
         // A route that fails hands over at once rather than after its delay.
         if (next < routes.length) launch()
-        else if (racing.size === 0) finish(lastError)
+        else if (racing.size === 0 && connecting === 0) finish(lastError)
       }
       socket.once(connected, onConnected)
+      if (!secure) queueMicrotask(onConnected)
       // A refused TCP connection is reported on the raw socket, not always on its TLS wrapper.
       socket.once('error', onError)
       tcp.once('error', onError)
+      }).catch((error: Error) => {
+        connecting--
+        lastError = error
+        if (done) return
+        if (lastGoodRoute.get(memory) === routeKey(route)) lastGoodRoute.delete(memory)
+        if (next < routes.length) launch()
+        else if (racing.size === 0 && connecting === 0) finish(lastError)
+      })
       if (next < routes.length) stagger = setTimeout(launch, ATTEMPT_DELAY_MS)
     }
 
