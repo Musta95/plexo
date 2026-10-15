@@ -89,3 +89,67 @@ export function connectRoute(route: NetworkRoute, port: number): Socket {
     family
   })
 }
+
+/** Windows needs per-socket IP_UNICAST_IF; Node's localAddress alone cannot select its route. */
+export async function connectRouteAsync(route: NetworkRoute, port: number): Promise<Socket> {
+  if (process.platform !== 'win32' || route.family !== 4) {
+    const socket = connectRoute(route, port)
+    await new Promise<void>((resolve, reject) => {
+      if (socket.readyState === 'open') return resolve()
+      socket.once('connect', resolve)
+      socket.once('error', reject)
+    })
+    return socket
+  }
+  if (!route.interfaceIndex) throw new Error('Windows adapter InterfaceIndex is unavailable')
+  const { startWindowsRouteHelper } = await import('./windowsRouteHelper')
+  const { port: helperPort, token } = await startWindowsRouteHelper()
+  const socket = connect({ host: '127.0.0.1', port: helperPort })
+  try {
+    await new Promise<void>((resolve, reject) => {
+      socket.once('connect', resolve)
+      socket.once('error', reject)
+    })
+    const header = JSON.stringify({
+      token,
+      remoteAddress: route.remoteAddress,
+      remotePort: port,
+      localAddress: route.localAddress,
+      interfaceIndex: route.interfaceIndex
+    })
+    socket.write(header + '\n')
+    await new Promise<void>((resolve, reject) => {
+      let response = Buffer.alloc(0)
+      const timeout = setTimeout(() => finish(new Error('Windows route helper timed out')), 10000)
+      const finish = (error?: Error): void => {
+        clearTimeout(timeout)
+        socket.off('data', onData)
+        socket.off('error', onError)
+        socket.off('close', onClose)
+        if (error) reject(error)
+        else resolve()
+      }
+      const onError = (error: Error): void => finish(error)
+      const onClose = (): void => finish(new Error('Windows route helper disconnected'))
+      const onData = (chunk: Buffer): void => {
+        response = Buffer.concat([response, chunk])
+        if (response.length > 4096) return finish(new Error('Invalid helper response'))
+        const eol = response.indexOf(10)
+        if (eol < 0) return
+        if (response.subarray(0, eol).toString('ascii') !== 'OK') {
+          return finish(new Error('Windows route helper refused connection'))
+        }
+        const leftover = response.subarray(eol + 1)
+        if (leftover.length) socket.unshift(leftover)
+        finish()
+      }
+      socket.on('data', onData)
+      socket.once('error', onError)
+      socket.once('close', onClose)
+    })
+    return socket
+  } catch (error) {
+    socket.destroy()
+    throw error
+  }
+}
