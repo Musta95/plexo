@@ -7,6 +7,7 @@ import { keepsRunningForBrowser, startBridge } from './browserBridge'
 import { acceptedLink, bringForward, linkFromArgs, offerLink } from './openLinks'
 import { loadSettings, loadThemeSource, migrateLegacyNetworkPreferences } from './settings'
 import { startUpdater } from './updater'
+import { stopWindowsRouteHelper } from './network/windowsRouteHelper'
 import { testKnobs } from './testKnobs'
 import type { DownloadManager } from './download/downloadManager'
 
@@ -183,6 +184,8 @@ app.whenReady().then(async () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })
 })
+
+app.on('will-quit', stopWindowsRouteHelper)
 
 app.on('before-quit', (event) => {
   if (quitAfterSuspending || !downloadManager) return
