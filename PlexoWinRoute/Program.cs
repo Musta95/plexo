@@ -12,14 +12,10 @@ internal static class Program
     {
         if (args.Length != 1 || args[0].Length < 32) throw new ArgumentException("Session token required");
         using var shutdown = new CancellationTokenSource();
-        using var listener = new TcpListener(IPAddress.Loopback, 0);
+        var listener = new TcpListener(IPAddress.Loopback, 0);
         listener.Start();
         Console.WriteLine($"READY {((IPEndPoint)listener.LocalEndpoint).Port}");
         Console.Out.Flush();
-        using var watchdog = new Timer(_ =>
-        {
-            if (Console.In.Peek() == -1) Environment.Exit(0);
-        }, null, Timeout.Infinite, Timeout.Infinite);
         while (true)
         {
             var client = await listener.AcceptTcpClientAsync(shutdown.Token);
