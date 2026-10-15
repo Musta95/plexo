@@ -11,6 +11,7 @@ interface WindowsAdapter {
   Name: string
   InterfaceDescription: string
   NdisPhysicalMedium: number
+  InterfaceIndex: number
 }
 
 /**
@@ -78,7 +79,7 @@ async function getWindowsAdapters(): Promise<Map<string, WindowsAdapter>> {
         '-NoProfile',
         '-NonInteractive',
         '-Command',
-        '[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Get-NetAdapter -ErrorAction Stop | Select-Object Name, InterfaceDescription, NdisPhysicalMedium | ConvertTo-Json -Compress'
+        '[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Get-NetAdapter -ErrorAction Stop | Select-Object Name, InterfaceDescription, NdisPhysicalMedium, InterfaceIndex | ConvertTo-Json -Compress'
       ],
       { windowsHide: true, timeout: DISCOVERY_TIMEOUT_MS, encoding: 'utf8' }
     )
@@ -119,6 +120,7 @@ export function ipv4Subnet(address: string, netmask: string): string | null {
  * takes a child process, while the addresses themselves are one cheap system call. */
 let labels: {
   devices: string
+  refreshedAt: number
   lookup: Promise<[Map<string, string>, Map<string, WindowsAdapter>]>
 } | null = null
 
@@ -131,8 +133,13 @@ export async function listActiveInterfaces(): Promise<NetworkInterfaceInfo[]> {
 
   const all = networkInterfaces()
   const devices = Object.keys(all).sort().join('\n')
-  if (labels?.devices !== devices) {
-    labels = { devices, lookup: Promise.all([getMacHardwarePortNames(), getWindowsAdapters()]) }
+  // Refresh adapter indices periodically even when interface names stay unchanged.
+  if (labels?.devices !== devices || Date.now() - labels.refreshedAt > 15000) {
+    labels = {
+      devices,
+      refreshedAt: Date.now(),
+      lookup: Promise.all([getMacHardwarePortNames(), getWindowsAdapters()])
+    }
   }
   const [hardwarePorts, windowsAdapters] = await labels.lookup
   const result: NetworkInterfaceInfo[] = []
@@ -175,7 +182,11 @@ export async function listActiveInterfaces(): Promise<NetworkInterfaceInfo[]> {
       displayName: hardwareName ?? device,
       addresses: usable,
       kind,
-      mac: addresses.find((addr) => addr.mac && addr.mac !== '00:00:00:00:00:00')?.mac
+      mac: addresses.find((addr) => addr.mac && addr.mac !== '00:00:00:00:00:00')?.mac,
+      interfaceIndex:
+        Number.isInteger(adapter?.InterfaceIndex) && (adapter?.InterfaceIndex ?? 0) > 0
+          ? adapter?.InterfaceIndex
+          : undefined
     })
   }
 
